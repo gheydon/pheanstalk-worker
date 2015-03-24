@@ -63,15 +63,6 @@ class Worker
      */
     public function processOne($timeout = null)
     {
-        static $firstRun = TRUE;
-
-        if ($firstRun) {
-            // if there is no callback for the "default" tube then ignore it.
-            if (!isset($this->_callbacks['default'])) {
-                $this->_pheanstalk->ignore('default');
-            }
-        }
-
         $job = $this->_pheanstalk->reserve($timeout);
         // Only process the job if a job is returned.
         if ($job) {
@@ -84,12 +75,18 @@ class Worker
                     $this->_callbacks[$tube]['callable']($job);
                     $this->_pheanstalk->delete($job);
                 } catch (Exception $e) {
-                    if (!empty($this->_callbacks[$tube]['onError']) && is_a($e, $this->_callbacks['onError'])) {
+                    if (!empty($this->_callbacks[$tube]['onError']) && is_a($e,
+                        $this->_callbacks['onError'])
+                    ) {
                         $this->_pheanstalk->release($job);
                     } else {
                         $this->_pheanstalk->bury($job);
                     }
                 }
+            } elseif ($tube == "default") {
+                // if we receive a job from the "default" queue and there is no registered function for the default queue then ignore it and move on.
+                $this->_pheanstalk->release($job);
+                $this->_pheanstalk->ignore('default');
             } else {
                 throw new Exception\WorkerException(sprintf(
                     'Job fetched for unknown tube "%s"',
