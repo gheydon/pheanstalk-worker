@@ -9,21 +9,32 @@ namespace Pheanstalk;
  * @package Pheanstalk Worker
  * @licence http://www.opensource.org/licenses/mit-license.php
  */
+
+use Psr\Log\LoggerInterface;
+use Psr\Log\NullLogger;
+
 class Worker
 {
     private $_pheanstalk;
     private $_callbacks = array();
+    private $_logger = null;
 
     /**
      * @param string $host
      * @param int $port
      * @param int $connectTimeout
+     * @param \Psr\Log\LoggerInterface $logger
      */
-    public function __construct($host, $port = PheanstalkInterface::DEFAULT_PORT, $connectTimeout = null)
+    public function __construct($host, $port = PheanstalkInterface::DEFAULT_PORT, $connectTimeout = null, LoggerInterface $logger = null)
     {
-
         $this->_pheanstalk = new Pheanstalk($host, $port, $connectTimeout);
-//        $this->_pheanstalk->ignore('default'); // ignore the default queue as we have no callable for it.
+        if ($logger) {
+            $this->_logger = $logger;
+        }
+        else {
+            $this->_logger = new NullLogger();
+        }
+        $this->_logger->notice('Worker initiated.');
     }
 
     /**
@@ -38,6 +49,7 @@ class Worker
             'retryOn' => $retryOn,
         );
         $this->_pheanstalk->watch($tube);
+        $this->_logger->notice('Callback registered', array('tube' => $tube));
     }
 
     /**
@@ -45,6 +57,7 @@ class Worker
      */
     public function process()
     {
+        $this->_logger->notice('Start processing jobs', array('tubes' => array_keys($this->_callbacks)));
         while (1) {
             $this->processOne();
         }
@@ -72,14 +85,20 @@ class Worker
 
             if (isset($this->_callbacks[$tube])) {
                 try {
+                    // get  starting stats for later comparision.
+                    $startTime = microtime(TRUE);
+                    $startMem = memory_get_usage();
                     $this->_callbacks[$tube]['callable']($job);
                     $this->_pheanstalk->delete($job);
+                    $this->_logger->notice('Job ' . $job->getId() . ' complete. Time taken: ' . (microtime(TRUE) - $startTime) . ' Memory Used: ' . (memory_get_usage() - $startMem));
                 } catch (Exception $e) {
                     if (!empty($this->_callbacks[$tube]['retryOn']) && is_a($e,
                         $this->_callbacks['retryOn'])
                     ) {
+                        $this->_logger->warning('Job ' . $job->getId() . ' failed. Releasing Job and retrying again.', array('trace' => $e->getTraceAsString()));
                         $this->_pheanstalk->release($job);
                     } else {
+                        $this->_logger->error('Job ' . $job->getId() . ' failed. Burying job.', array('trace' => $e->getTraceAsString()));
                         $this->_pheanstalk->bury($job);
                     }
                 }
@@ -87,7 +106,11 @@ class Worker
                 // if we receive a job from the "default" queue and there is no registered function for the default queue then ignore it and move on.
                 $this->_pheanstalk->release($job);
                 $this->_pheanstalk->ignore('default');
+                $this->_logger->warning('Job reserved from default tube. Releasing job and ignoring default tube.', $statJob);
             } else {
+                // we know nothing about this job and what we should do with it. We should not have received this so something is really not right.
+                $this->_pheanstalk->release($job);
+                $this->_logger->error("Job fetched for unknown tube '$tube'", array('id' => $job->getId()));
                 throw new Exception\WorkerException(sprintf(
                     'Job fetched for unknown tube "%s"',
                     $tube
