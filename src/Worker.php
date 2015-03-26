@@ -31,11 +31,11 @@ class Worker
      * @param callable $callable
      * @param string $onError
      */
-    public function register($tube, callable $callable, $onError = '')
+    public function register($tube, callable $callable, $retryOn = '')
     {
         $this->_callbacks[$tube] = array(
             'callable' => $callable,
-            'onError' => $onError,
+            'retryOn' => $retryOn,
         );
         $this->_pheanstalk->watch($tube);
     }
@@ -75,8 +75,8 @@ class Worker
                     $this->_callbacks[$tube]['callable']($job);
                     $this->_pheanstalk->delete($job);
                 } catch (Exception $e) {
-                    if (!empty($this->_callbacks[$tube]['onError']) && is_a($e,
-                        $this->_callbacks['onError'])
+                    if (!empty($this->_callbacks[$tube]['retryOn']) && is_a($e,
+                        $this->_callbacks['retryOn'])
                     ) {
                         $this->_pheanstalk->release($job);
                     } else {
